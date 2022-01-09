@@ -160,10 +160,14 @@ M.get_diagnostic_counts = function ()
   return lookup
 end
 
+M.get_git_project_root = function()
+  return vim.fn.systemlist("git rev-parse --show-toplevel")[1]
+end
+
 ---Parse "git status" output for the current working directory.
 ---@return table table Table with the path as key and the status as value.
 M.get_git_status = function ()
-  local project_root = vim.fn.systemlist("git rev-parse --show-toplevel")[1]
+  local project_root = M.get_git_project_root()
   local git_output = vim.fn.systemlist("git status --porcelain")
   local git_status = {}
   local codes = "[ACDMRTU!%?%s]"
@@ -204,7 +208,7 @@ M.get_git_status = function ()
     end)
   end
 
-  return git_status
+  return git_status, project_root
 end
 
 ---Resolves some variable to a string. The object can be either a string or a

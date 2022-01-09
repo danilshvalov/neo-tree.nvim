@@ -8,7 +8,8 @@ local renderer = require("neo-tree.ui.renderer")
 -- for the source config, and a setup function that takes that config.
 local sources = {
   "filesystem",
-  "buffers"
+  "buffers",
+  "git_status"
 }
 
 local M = { }
