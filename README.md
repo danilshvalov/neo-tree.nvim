@@ -1,7 +1,8 @@
 # Neo-tree.nvim
 
 Neo-tree is a Neovim plugin to browse the file system and other tree like
-structures in a sidebar **or** floating window. 
+structures in whatever style suits you, including sidebars, floating windows,
+netrw split style, or all of them at once!
 
 ![Neo-tree file system](https://github.com/nvim-neo-tree/resources/raw/main/images/Neo-tree-filesystem.png)
 
@@ -11,6 +12,9 @@ The biggest and most important feature of Neo-tree is that we will never
 knowingly push a breaking change and interrupt your day. Bugs happen, but
 breaking changes can always be avoided. When breaking changes are needed, there
 will be a new branch that you can opt into, when it is a good time for you.
+
+See [What is a Breaking Change?](#what-is-a-breaking-change) for details.
+
 
 ### User Experience GOOD :slightly_smiling_face: :thumbsup:
 
@@ -47,19 +51,54 @@ use {
       "MunifTanjim/nui.nvim" 
     },
     config = function ()
+      -- See ":help neo-tree-highlights" for a list of available highlight groups
+      vim.cmd([[
+        hi link NeoTreeDirectoryName Directory
+        hi link NeoTreeDirectoryIcon NeoTreeDirectoryName
+      ]])
+
       require("neo-tree").setup({
+        close_if_last_window = false, -- Close Neo-tree if it is the last window left in the tab
         popup_border_style = "rounded",
         enable_git_status = true,
         enable_diagnostics = true,
+        default_component_configs = {
+          indent = {
+            indent_size = 2,
+            padding = 1, -- extra padding on left hand side
+            with_markers = true,
+            indent_marker = "│",
+            last_indent_marker = "└",
+            highlight = "NeoTreeIndentMarker",
+          },
+          icon = {
+            folder_closed = "",
+            folder_open = "",
+            folder_empty = "ﰊ",
+            default = "*",
+          },
+          name = {
+            trailing_slash = false,
+            use_git_status_colors = true,
+          },
+          git_status = {
+            highlight = "NeoTreeDimText", -- if you remove this the status will be colorful
+          },
+        },
         filesystem = {
           filters = { --These filters are applied to both browsing and searching
             show_hidden = false,
             respect_gitignore = true,
           },
-          follow_current_file = false, -- This will find and focus the file in the
-          -- active buffer every time the current file is changed while the tree is open.
+          follow_current_file = false, -- This will find and focus the file in the active buffer every
+                                       -- time the current file is changed while the tree is open.
           use_libuv_file_watcher = false, -- This will use the OS level file watchers
-          -- to detect changes instead of relying on nvim autocmd events.
+                                          -- to detect changes instead of relying on nvim autocmd events.
+          hijack_netrw_behavior = "open_default", -- netrw disabled, opening a directory opens neo-tree
+                                                  -- in whatever position is specified in window.position
+                                -- "open_split",  -- netrw disabled, opening a directory opens within the
+                                                  -- window like netrw would, regardless of window.position
+                                -- "disabled",    -- netrw left alone, neo-tree does not handle opening dirs
           window = {
             position = "left",
             width = 40,
@@ -74,7 +113,8 @@ use {
               ["H"] = "toggle_hidden",
               ["I"] = "toggle_gitignore",
               ["R"] = "refresh",
-              ["/"] = "filter_as_you_type",
+              ["/"] = "fuzzy_finder",
+              --["/"] = "filter_as_you_type", -- this was the default until v1.28
               --["/"] = "none" -- Assigning a key to "none" will remove the default mapping
               ["f"] = "filter_on_submit",
               ["<c-x>"] = "clear_filter",
@@ -84,7 +124,8 @@ use {
               ["c"] = "copy_to_clipboard",
               ["x"] = "cut_to_clipboard",
               ["p"] = "paste_from_clipboard",
-              ["bd"] = "buffer_delete",
+              ["m"] = "move", -- takes text input for destination
+              ["q"] = "close_window",
             }
           }
         },
@@ -106,6 +147,7 @@ use {
               ["c"] = "copy_to_clipboard",
               ["x"] = "cut_to_clipboard",
               ["p"] = "paste_from_clipboard",
+              ["bd"] = "buffer_delete",
             }
           },
         },
@@ -158,16 +200,17 @@ You can then change what you want in the pasted `config` table and pass it to
 `require("neo-tree").setup(config)`
 
 
-### Commands
+### Commands (for sidebar and float postions)
 
-Here are the various ways to open the tree:
+Here are the various ways to open the tree as a sidebar or float:
 
 ```
 :NeoTreeReveal
 ``` 
 This will find the current file in the tree and focus it. If the current file
 is not within the current working directory, you will be prompted to change the
-cwd.
+cwd. Add `!` to the command to force it to change the working directory without
+prompting.
 
 ```
 :NeoTreeFocus 
@@ -194,11 +237,49 @@ window if it is already open: `NeoTreeRevealToggle` `NeoTreeShowToggle`
 
 You can also close the tree with: `:NeoTreeClose `
 
-Complete documentation can be find in the vim help file `:h neo-tree` or online
-at [neo-tree.txt](/doc/neo-tree.txt)
 
-An example configuration for the filesystem source with proper syntax
-highlighting can also be viewed at the [filesystem README](/lua/neo-tree/sources/filesystem/README.md)
+### Commands (for netrw/split style)
+
+If you specify `window.position = "split"` for a given source, all of the above
+commands will work within the current window like netrw would instead of opening
+sidebars or floats. If you want to use both styles, you can leave your default
+position as left/right/float, but explicitly open Neo-tree within the current
+split as needed using the following commands:
+
+#### Reveal
+
+```
+:NeoTreeRevealInSplit
+``` 
+```
+:NeoTreeRevealInSplitToggle
+``` 
+This will show the tree within the current window, and will find the current
+file in the tree and focus it. If the current file is not within the current
+working directory, you will be prompted to change the cwd.
+
+
+#### Show
+
+```
+:NeoTreeShowInSplit
+```
+```
+:NeoTreeShowInSplitToggle
+```
+This will show the tree within the current window. If you have used the tree
+within this window previously, you will resume that session.
+
+### Netrw Hijack
+
+```
+:edit .
+:[v]split .
+```
+
+If `"filesystem.window.position"` is set to `"split"`, or if you have specified
+`filesystem.netrw_hijack_behavior = "open_split"`, then any command
+that would open a directory will open neo-tree in the specified window.
 
 
 ## Sources
@@ -224,9 +305,11 @@ This source can be used to:
 
 Another available source is `buffers`, which displays your open buffers. This is
 the same list you would see from `:ls`. To show with the `buffers` list, use:
+
 ```
 :NeoTreeShow buffers
 ```
+
 or `:NeoTreeFocus buffers` or `:NeoTreeShow buffers` or `:NeoTreeFloat buffers`
 
 ### git_status
@@ -260,7 +343,7 @@ Details on how to configure everything is in the help file at `:h
 neo-tree-configuration` or online at
 [neo-tree.txt](https://github.com/nvim-neo-tree/neo-tree.nvim/blob/main/doc/neo-tree.txt)
 
-Recipes for customizations can be found on the [wiki](wiki). Recipes include
+Recipes for customizations can be found on the [wiki](https://github.com/nvim-neo-tree/neo-tree.nvim/wiki/Recipes). Recipes include
 things like adding a component to show the
 [Harpoon](https://github.com/ThePrimeagen/harpoon) index for files, or
 responding to the `"file_opened"` event to auto clear the search when you open a
@@ -315,6 +398,25 @@ Neo-tree follows in the spirit of plugins like
 configurable and take either strings, tables, or functions. You can take sane
 defaults or build your tree items from scratch. There should be the ability to
 add any features you can think of through existing hooks in the setup function.
+
+## What is a Breaking Change?
+
+As of v1.30, a breaking change is defined as anything that _changes_ existing:
+
+- vim commands (`:NeoTreeShow`, `:NeoTreeReveal`, etc)
+- configuration options that are passed into the `setup()` function
+- `NeoTree*` highlight groups
+- lua functions exported in the following modules that are not prefixed with `_`:
+    * `neo-tree`
+    * `neo-tree.events`
+    * `neo-tree.sources.manager`
+    * `neo-tree.sources.*` (init.lua files)
+    * `neo-tree.sources.*.commands`
+    * `neo-tree.ui.renderer`
+    * `neo-tree.utils`
+
+If there are other functions you would like to use that are not yet considered
+part of the public API, please open an issue so we can discuss it.
 
 ## Contributions
 

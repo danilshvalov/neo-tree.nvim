@@ -12,6 +12,7 @@ M.FILE_NAME_OPENED = "NeoTreeFileNameOpened"
 M.SYMBOLIC_LINK_TARGET = "NeoTreeSymbolicLinkTarget"
 M.FILTER_TERM = "NeoTreeFilterTerm"
 M.FLOAT_BORDER = "NeoTreeFloatBorder"
+M.FLOAT_TITLE = "NeoTreeFloatTitle"
 M.GIT_ADDED = "NeoTreeGitAdded"
 M.GIT_CONFLICT = "NeoTreeGitConflict"
 M.GIT_MODIFIED = "NeoTreeGitModified"
@@ -20,6 +21,7 @@ M.NORMAL = "NeoTreeNormal"
 M.NORMALNC = "NeoTreeNormalNC"
 M.ROOT_NAME = "NeoTreeRootName"
 M.TITLE_BAR = "NeoTreeTitleBar"
+M.INDENT_MARKER = "NeoTreeIndentMarker"
 
 local function dec_to_hex(n)
   local hex = string.format("%06x", n)
@@ -93,6 +95,7 @@ M.setup = function()
     "444444"
   )
 
+  create_highlight_group(M.FLOAT_TITLE, {}, float_border_hl.background, normal_hl.foreground)
   create_highlight_group(M.TITLE_BAR, {}, float_border_hl.foreground, nil)
 
   create_highlight_group(M.GIT_ADDED, { "GitGutterAdd", "GitSignsAdd" }, nil, "5faf5f")
@@ -119,6 +122,7 @@ M.setup = function()
   create_highlight_group(M.SYMBOLIC_LINK_TARGET, { M.FILE_NAME })
   create_highlight_group(M.FILTER_TERM, { "SpecialChar", "Normal" })
   create_highlight_group(M.ROOT_NAME, {}, nil, nil, "bold,italic")
+  create_highlight_group(M.INDENT_MARKER, { M.DIM_TEXT })
 end
 
 return M

@@ -10,8 +10,11 @@ Mappings .................... |neo-tree-mappings|
   Filter .................... |neo-tree-filter|
 Configuration ............... |neo-tree-configuration|
   Setup ..................... |neo-tree-setup|
+  Hijack Netrw Behavior ..... |neo-tree-netrw-hijack|
+  Component Configs ......... |neo-tree-component-configs|
   Git Status ................ |neo-tree-git-status|
   Diagnostics ............... |neo-tree-diagnostics|
+  Indent markers ............ |neo-tree-indent-markers|
   Highlights ................ |neo-tree-highlights|
   Events .................... |neo-tree-events|
   Components and Renderers .. |neo-tree-renderers|
@@ -24,9 +27,13 @@ Other Sources ............... |neo-tree-sources|
 
 INTRODUCTION                                             *neo-tree-introduction*
 
-Neo-tree is a plugin for nvim that can display tree structures in a sidebar or
-a floating window. The current version includes a filesystem browser, a
-buffer list, and a git status view.
+Neo-tree is a plugin for nvim that can display tree structures in a sidebar,
+floating window, or in a split. The current version includes a filesystem
+browser, a buffer list, and a git status view.
+
+If you want to use this in splits like |netrw| instead of as a sidebar or
+floating window, use the *Split commands, such as |NeoTreeRevealInSplit|. You
+may use both styles at the same time if you want.
 
 
 COMMANDS                                                     *neo-tree-commands*
@@ -34,8 +41,8 @@ COMMANDS                                                     *neo-tree-commands*
 Neo-tree does not define any default keybindings for nvim. The suggested
 keybindings are:
 
-    nnoremap / :NeoTreeReveal<cr>                          
-    nnoremap | :NeoTreeClose<cr>                          
+    nnoremap / :NeoTreeRevealInSplitToggle<cr>                          
+    nnoremap | :NeoTreeRevealToggle<cr>                          
     nnoremap <leader>b :NeoTreeFocus buffers<cr>
     nnoremap <leader>s :NeoTreeFocus git_status<cr>
 
@@ -48,8 +55,12 @@ NeoTreeFocus will open the sidebar and focus it if it is closed, and just switch
 to the neo-tree window if it is already open. Takes an optional argument to
 specify the source to focus, such as `filesystem` or `buffers`.
 
-If you specify `window.position: float` in your configuration, this will
+If you specify `window.position = "float"` in your configuration, this will
 act like |NeoTreeFloat| but will not reveal the current file.
+
+If you specify `window.position = "split"` in your configuration, this will act
+like |NeoTreeShowInSplit|.
+
 
 |NeoTreeShow|                                                      *NeoTreeShow*
 You can also use NeoTreeShow which will open the tree, but leave the current
@@ -58,11 +69,44 @@ window focused. Takes an optional argument to specify the source to show.
 If you specify `window.position: float` in your configuration, this will
 act like |NeoTreeFloat| but will not reveal the current file.
 
+If you specify `window.position = "split"` in your configuration, this will act
+like |NeoTreeShowInSplit|.
+
+
+|NeoTreeShowInSplit|                                        *NeoTreeShowInSplit*
+This will show the tree in the currently focused window instead of a sidebar or
+float, like |netrw| would. Opening a file from this tree will then open in the
+same window as well. Please not that windows opened in this way will not react
+to the `follow_current_file` option, as that applies to sidebars only.
+
+This command is particularly useful if you want to use a mix of sidebars and
+split style trees. If you only want netrw/split style, you can also specify
+`window.position = "split"` in your config and the other commands will redirect
+here.
+
+
 |NeoTreeReveal|                                                  *NeoTreeReveal*
 NeoTreeReveal is like NeoTreeFocus, but it will also find whatever file is in
 the current buffer, expand all nodes needed to reveal it, and set the cursor on
 that file. If the current file is not in the current working directory, you will
-be prompted to change it.
+be prompted to change it. Add `!` to the command to force it to change the
+working directory without prompting.
+
+If you specify `window.position = "split"` in your configuration, this will act
+like |NeoTreeRevealInSplit|.
+
+
+|NeoTreeRevealInSplit|                                    *NeoTreeRevealInSplit*
+Same idea as NeoTreeReveal, but this will use the current window instead of a
+sidebar or float, like |netrw| would. Opening a file from this tree will then
+open in the same window as well. Please not that windows opened in this way will
+not react to the `follow_current_file` option, as that applies to sidebars only.
+
+This command is particularly useful if you want to use a mix of sidebars and
+split style trees. If you only want netrw/split style, you can also specify
+`window.position = "split"` in your config and the other commands will redirect
+here.
+
 
 |NeoTreeFloat|                                                    *NeoTreeFloat*
 You can also use NeoTreeFloat which will open the tree in a floating window. The
@@ -75,10 +119,12 @@ config, it works as a one time override. If the current source is currently
 displayed in a sidebar, it will be closed and recreated with the same state in
 a floating window.
 
+
 |NeoTreeClose|                                                    *NeoTreeClose*
 Closes all Neo-tree windows. Takes an optional argument to specify the position
 to close, such as `left` or `right`. The position corresponds to the
 window.position setting in your config for each source.
+
 
 |NeoTreePasteConfig|                                        *NeoTreePasteConfig*
 This is a special command to help you get started. It will paste the complete,
@@ -101,28 +147,40 @@ Note: The "selected" item is the line the cursor is currently on.
 
 <2-LeftMouse> = open:        Expand or collapse a folder. If a file is selected,
                              open it in the window closest to the tree.
+
 <cr>          = open:        Same as above.
+
 S             = open_split:  Same as open, but opens in a new horizontal split.
+
 s             = open_vsplit: Same as open, but opens in a vertical split
+
 <bs>          = navigate_up: Moves the root directory up one level.
+
 .             = set_root:    Changes the root directory to the currently 
                              selected folder.
 
 
 FILE ACTIONS                                            *neo-tree-file-actions*
 a    = add:                  Create a new file or directory.
+
 d    = delete:               Delete the selected file or directory.
+
 r    = rename:               Rename the selected file or directory.
+
 c    = copy_to_clipboard:    Mark file to be copied.
+
 x    = cut_to_clipboard:     Mark file to be cut (moved).
+
 p    = paste_from_clipboard: Copy/move each marked file in the to the
                              selected folder.
 
 
 VIEW CHANGES                                            *neo-tree-view-changes*
 H = toggle_hidden:    Toggle whether hidden files (.*) are shown or not.
+
 I = toggle_gitignore: Toggle whether the gitignore file is
                       respected.
+
 R = refresh:          Rescan the filesystem and redraw the tree. Changes
                       made within nvim should be detected automatically, but
                       this is useful for changes made elsewhere.
@@ -133,15 +191,27 @@ FILTER                                                        *neo-tree-filter*
                             files and folders that contain the specified term as
                             you type. This will use fd if it is installed, or 
                             find, or which if you are on Windows.
+
+                            As of v1.28, this acts like a fuzzy finder,
+                            meaning that pressing up/down while the filter
+                            window is open will move the cursor up and down in
+                            the tree, and pressing `<enter>` will open that
+                            item and clear the filter. Any other method of
+                            closing the filter window will also clear the
+                            filter.
+
 f     = filter_on_submit:   Same as above, but does not search until you hit
                             enter. Useful if filter_as_you_type is too slow.
+                            Also useful if you want to leave the tree
+                            filtered.
+
 <C-x> = clear_filter:       Removes the filter.
 
 
 CUSTOM COMMANDS                                       *neo-tree-custom-commands*
 
 If you want to define your own command, you have two options:
-  1. You can define (or override) a command in the `commands` section of the
+  1. You can define (or oVErride) a command in the `commands` section of the
   config for each source, then reference that by name in a mapping.
   2. You can map directly to a function and skip defining a command.
 
@@ -257,7 +327,63 @@ you still may want to dump it to a blank .lua file just to read it as
 documentation.
 
 
-GIT STATUS                                           *neo-tree-git-status*
+NETRW HIJACK BEHAVIOR                                    *neo-tree-netrw-hijack*
+
+Neo-tree can and does hijack Netrw by default. This is configurable and can be
+disabled if you use Netrw, or have other plugins that use Netrw functionality.
+This can be controlled by setting the `filesystem.hijack_netrw_behavior` option
+to one of:
+
+disabled               Netrw left alone, neo-tree does not handle opening dirs.
+
+open_default (default) Netrw disabled, opening a directory opens neo-tree
+                       in whatever position is specified in `window.position`.
+
+open_split             Netrw disabled, opening a directory opens within the
+                       window like netrw would, regardless of `window.position`.
+
+>
+    require("neo-tree").setup({
+      filesystem = {
+        hijack_netrw_behavior = "open_default",
+                             -- "open_split",  
+                             -- "disabled", 
+    })
+<
+
+
+
+
+COMPONENT CONFIGS                                   *neo-tree-component-configs*
+
+The visual display of a node is made up of a series of components rendered in a
+certain order and with certain configuration options. See |neo-tree-components|
+for a deeper dive into customizing this aspect. If you wish to configure those
+components in a universal way, the best place to do that is in the
+`default_component_configs` section of the config.
+
+For example, to add indent markers, you can apply your settings in each renderer
+for each source, or just do it once in the default_component_configs section:
+
+>
+    require("neo-tree").setup({
+      default_component_configs = {
+        indent = {
+          with_markers = true,
+          indent_marker = "│",
+          last_indent_marker = "└",
+          indent_size = 2,
+        },
+      },
+    })
+<
+See |neo-tree-indent-markers| for more details.
+
+The default config has more examples of component configuration, use
+|NeoTreePasteConfig| to view that default config.
+
+
+GIT STATUS                                                 *neo-tree-git-status*
 
 By default, Neo-tree will attempt to get the git status for files in the
 current directory. It will use this information to add markers to the right of
@@ -271,7 +397,7 @@ component of your renderer(s).
 See also: |neo-tree-git-status-source|
 
 
-DIAGNOSTICS                                         *neo-tree-diagnostics*
+DIAGNOSTICS                                               *neo-tree-diagnostics*
 
 By default, Neo-tree will display diagnostic symbols next to files. It will
 display the highest severity level for files, and errors only for directories.
@@ -293,6 +419,62 @@ To disable this feature entirely, set `enable_diagnostics = false` in your
 config when calling the setup function.
 
 
+INDENT MARKERS                                      *neo-tree-indent-markers*
+
+By default, indent markers (aka indent guides) are disabled. In Neo-tree
+indent is a component, so to enable indent markers, you need configure the
+`indent` component:
+
+...at the global level:
+>
+    require("neo-tree").setup({
+      default_component_configs = {
+        indent = {
+          with_markers = true,
+          indent_marker = "│",
+          last_indent_marker = "└",
+          indent_size = 2,
+        },
+      },
+    })
+<
+
+...or in each renderer:
+>
+    require("neo-tree").setup({
+        filesystem = {
+            renderers = {
+              directory = {
+                {
+                  "indent",
+                  with_markers = true,
+                  indent_marker = "│",
+                  last_indent_marker = "└",
+                  indent_size = 2,
+                },
+                -- other components
+              },
+              file = {
+                {
+                  "indent",
+                  with_markers = true,
+                  indent_marker = "│",
+                  last_indent_marker = "└",
+                  indent_size = 2,
+                -- other components
+              },
+            }
+        }
+    })
+<
+
+You also can change the marker characters. To do this, you need change
+`indent_marker` and `last_indent_marker` settings.
+
+To change highlight of indent markers, you need configure `NeoTreeIndentMarker`
+highlight group. By default, it refers to `Normal` highlight.
+
+
 HIGHLIGHTS                                                 *neo-tree-highlights*
 
 The following highlight groups are defined by this plugin. If you set any of
@@ -310,6 +492,11 @@ NeoTreeFileNameOpened     File name when the file is open. Not used yet.
 NeoTreeSymbolicLinkTarget Symbolic link target.
 NeoTreeFilterTerm         The filter term, as displayed in the root node.
 NeoTreeFloatBorder        The border for pop-up windows.
+NeoTreeFloatTitle         Used for the title text of pop-ups when the border-style
+                          is set to another style than "NC". This is derived
+                          from NeoTreeFloatBorder.
+NeoTreeTitleBar           Used for the title bar of pop-ups, when the border-style
+                          is set to "NC". This is derived from NeoTreeFloatBorder.
 NeoTreeGitAdded           File name when the git status is added.
 NeoTreeGitConflict        File name when the git status is conflict.
 NeoTreeGitModified        File name when the git status is modified.
@@ -317,8 +504,8 @@ NeoTreeGitUntracked       File name when the git status is untracked.
 NeoTreeNormal             |hl-Normal| override in Neo-tree window.
 NeoTreeNormalNC           |hi-NormalNC| override in Neo-tree window.
 NeoTreeRootName           The name of the root node.
-NeoTreeTitleBar           Used for the title bar of pop-ups, when the border-style
-                          is set to "NC". This is derived from NeoTreeFloatBorder.
+NeoTreeIndentMarker       The style of indentation markers (guides). By default,
+                          the "Normal" highlight is used.
 
 
 EVENTS                                                        *neo-tree-events*
@@ -400,6 +587,9 @@ Fired on the |DirChanged| autocmd event
 
 "vim_win_enter"
 Fired on the |WinEnter| autocmd event
+
+"vim_colorscheme"
+Fired on the |ColorScheme| autocmd event
 
 
 You can also define your own with:
@@ -483,7 +673,10 @@ set of components.
 Each component function is called with the following args:
   `config` The config object defined in the renderer. This is how a component
   can be made to be configurable. This is useful if you want different behavior
-  in a directory renderer vs a file renderer.
+  in a directory renderer vs a file renderer. The config is a combination of any
+  options specified in the default_component_configs
+  (|neo-tree-default-component-configs|), which can be overriden by settings
+  specified within each renderer config.
 
   `node` The NuiNode object for this node. The properties can vary by source, but
   each one will generally have at least id and name properties.

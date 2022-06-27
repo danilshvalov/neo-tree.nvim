@@ -28,71 +28,130 @@ M.debounce_strategy = {
   CALL_LAST_ONLY = 1,
 }
 
+M.debounce_action = {
+  START_NORMAL = 0,
+  START_ASYNC_JOB = 1,
+  COMPLETE_ASYNC_JOB = 2,
+}
+
 ---Call fn, but not more than once every x milliseconds.
 ---@param id string Identifier for the debounce group, such as the function name.
 ---@param fn function Function to be executed.
 ---@param frequency_in_ms number Miniumum amount of time between invocations of fn.
 ---@param strategy number The debounce_strategy to use, determines which calls to fn are not dropped.
----@param callback function Called with the result of executing fn as: callback(success, result)
-M.debounce = function(id, fn, frequency_in_ms, strategy, callback)
-  strategy = strategy or M.debounce_strategy.CALL_FIRST_AND_LAST
+M.debounce = function(id, fn, frequency_in_ms, strategy, action)
   local fn_data = tracked_functions[id]
+
+  local defer_function
+  defer_function = function()
+    fn_data.in_debounce_period = true
+    vim.defer_fn(function()
+      local current_data = tracked_functions[id]
+      if not current_data then
+        return
+      end
+      if fn_data.async_in_progress then
+        defer_function()
+        return
+      end
+      local _fn = current_data.fn
+      current_data.fn = nil
+      current_data.in_debounce_period = false
+      if _fn ~= nil then
+        M.debounce(id, _fn, current_data.frequency_in_ms, strategy, action)
+      end
+    end, frequency_in_ms)
+  end
+
   if fn_data == nil then
+    if action == M.debounce_action.COMPLETE_ASYNC_JOB then
+      -- original call complete and no further requests have been made
+      return
+    end
     -- first call for this id
     fn_data = {
       id = id,
-      fn = nil,
+      in_debounce_period = false,
+      fn = fn,
       frequency_in_ms = frequency_in_ms,
-      postponed_callback = nil,
-      in_debounce_period = true,
     }
-    if strategy == M.debounce_strategy.CALL_LAST_ONLY then
-      fn_data.in_debounce_period = true
-    end
     tracked_functions[id] = fn_data
-  else
-    if fn_data.in_debounce_period then
-      -- This id was called recently and can't be executed again yet.
-      -- Just keep track of the details for this request so it
-      -- can be executed at the end of the debounce period.
-      -- Last one in wins.
-      fn_data.fn = fn
-      fn_data.frequency_in_ms = frequency_in_ms
-      fn_data.postponed_callback = callback
+    if strategy == M.debounce_strategy.CALL_LAST_ONLY then
+      defer_function()
       return
     end
+  else
+    fn_data.fn = fn
+    fn_data.frequency_in_ms = frequency_in_ms
+    if action == M.debounce_action.COMPLETE_ASYNC_JOB then
+      fn_data.async_in_progress = false
+      return
+    elseif fn_data.async_in_progress then
+      defer_function()
+      return
+    end
+  end
+
+  if fn_data.in_debounce_period then
+    -- This id was called recently and can't be executed again yet.
+    -- Last one in wins.
+    return
   end
 
   -- Run the requested function normally.
   -- Use a pcall to ensure the debounce period is still respected even if
   -- this call throws an error.
+  local success, result = true, nil
   fn_data.in_debounce_period = true
-  local success, result = pcall(fn)
+  if type(fn) == "function" then
+    success, result = pcall(fn)
+  end
+  fn_data.fn = nil
+  fn = nil
 
   if not success then
-    log.error("Error in neo-tree.utils.debounce: ", result)
+    log.error("debounce ", id, " error: ", result)
+  elseif result and action == M.debounce_action.START_ASYNC_JOB then
+    -- This can't fire again until the COMPLETE_ASYNC_JOB signal is sent.
+    fn_data.async_in_progress = true
   end
 
-  -- Now schedule the next earliest execution.
-  -- If there are no calls to run the same function between now
-  -- and when this deferred executes, nothing will happen.
-  -- If there are several calls, only the last one in will run.
-  vim.defer_fn(function()
-    local current_data = tracked_functions[id]
-    local _callback = current_data.postponed_callback
-    local _fn = current_data.fn
-    current_data.postponed_callback = nil
-    current_data.fn = nil
-    current_data.in_debounce_period = false
-    if _fn ~= nil then
-      M.debounce(id, _fn, current_data.frequency_in_ms, strategy, _callback)
+  if strategy == M.debounce_strategy.CALL_LAST_ONLY then
+    if fn_data.async_in_progress then
+      defer_function()
+    else
+      -- We are done with this debounce
+      tracked_functions[id] = nil
     end
-  end, frequency_in_ms)
-
-  -- The callback function is outside the scope of the debounce period
-  if type(callback) == "function" then
-    callback(success, result)
+  else
+    -- Now schedule the next earliest execution.
+    -- If there are no calls to run the same function between now
+    -- and when this deferred executes, nothing will happen.
+    -- If there are several calls, only the last one in will run.
+    strategy = M.debounce_strategy.CALL_LAST_ONLY
+    defer_function()
   end
+end
+
+M.execute_command = function(cmd)
+  local result = vim.fn.systemlist(cmd)
+
+  -- An empty result is ok
+  if vim.v.shell_error ~= 0 or (#result > 0 and vim.startswith(result[1], "fatal:")) then
+    return false, {}
+  else
+    return true, result
+  end
+end
+
+M.find_buffer_by_name = function(name)
+  for _, buf in ipairs(vim.api.nvim_list_bufs()) do
+    local buf_name = vim.api.nvim_buf_get_name(buf)
+    if buf_name == name then
+      return buf
+    end
+  end
+  return -1
 end
 
 ---Gets diagnostic severity counts for all files
@@ -204,6 +263,14 @@ end
 ---@param open_cmd string The vimcommand to use to open the file
 M.open_file = function(state, path, open_cmd)
   open_cmd = open_cmd or "edit"
+  if open_cmd == "edit" then
+    -- If the file is already open, switch to it.
+    local bufnr = M.find_buffer_by_name(path)
+    if bufnr > 0 then
+      open_cmd = "b"
+    end
+  end
+
   if M.truthy(path) then
     local events = require("neo-tree.events")
     local event_result = events.fire_event(events.FILE_OPEN_REQUESTED, {
@@ -215,40 +282,44 @@ M.open_file = function(state, path, open_cmd)
       events.fire_event(events.FILE_OPENED, path)
       return
     end
-    -- use last window if possible
-    local suitable_window_found = false
-    local nt = require("neo-tree")
-    if nt.config.open_files_in_last_window then
-      local prior_window = nt.get_prior_window()
-      if prior_window > 0 then
-        local success = pcall(vim.api.nvim_set_current_win, prior_window)
-        if success then
-          suitable_window_found = true
+    if state.current_position == "split" then
+      vim.cmd(open_cmd .. " " .. path)
+    else
+      -- use last window if possible
+      local suitable_window_found = false
+      local nt = require("neo-tree")
+      if nt.config.open_files_in_last_window then
+        local prior_window = nt.get_prior_window()
+        if prior_window > 0 then
+          local success = pcall(vim.api.nvim_set_current_win, prior_window)
+          if success then
+            suitable_window_found = true
+          end
         end
       end
-    end
-    -- find a suitable window to open the file in
-    if not suitable_window_found then
-      if state.window.position == "right" then
-        vim.cmd("wincmd t")
-      else
+      -- find a suitable window to open the file in
+      if not suitable_window_found then
+        if state.current_position == "right" then
+          vim.cmd("wincmd t")
+        else
+          vim.cmd("wincmd w")
+        end
+      end
+      local attempts = 0
+      while attempts < 4 and vim.bo.filetype == "neo-tree" do
+        attempts = attempts + 1
         vim.cmd("wincmd w")
       end
-    end
-    local attempts = 0
-    while attempts < 4 and vim.bo.filetype == "neo-tree" do
-      attempts = attempts + 1
-      vim.cmd("wincmd w")
-    end
-    -- TODO: make this configurable, see issue #43
-    if vim.bo.filetype == "neo-tree" then
-      -- Neo-tree must be the only window, restore it's status as a sidebar
-      local winid = vim.api.nvim_get_current_win()
-      local width = M.get_value(state, "window.width", 40)
-      vim.cmd("vsplit " .. path)
-      vim.api.nvim_win_set_width(winid, width)
-    else
-      vim.cmd(open_cmd .. " " .. path)
+      -- TODO: make this configurable, see issue #43
+      if vim.bo.filetype == "neo-tree" then
+        -- Neo-tree must be the only window, restore it's status as a sidebar
+        local winid = vim.api.nvim_get_current_win()
+        local width = M.get_value(state, "window.width", 40)
+        vim.cmd("vsplit " .. path)
+        vim.api.nvim_win_set_width(winid, width)
+      else
+        vim.cmd(open_cmd .. " " .. path)
+      end
     end
     events.fire_event(events.FILE_OPENED, path)
   end
@@ -276,13 +347,6 @@ M.resolve_config_option = function(state, config_option, default_value)
   end
 end
 
----The file system path separator for the current platform.
-M.path_separator = "/"
-M.is_windows = vim.fn.has("win32") == 1 or vim.fn.has("win32unix") == 1
-if M.is_windows == true then
-  M.path_separator = "\\"
-end
-
 ---Normalize a path, to avoid errors when comparing paths.
 ---@param path string The path to be normalize.
 ---@return string string The normalized path.
@@ -299,9 +363,21 @@ end
 --@param path string The path to check is a subpath.
 --@return boolean boolean True if it is a subpath, false otherwise.
 M.is_subpath = function(base, path)
+  if not M.truthy(base) or not M.truthy(path) then
+    return false
+  elseif base == path then
+    return true
+  end
   base = M.normalize_path(base)
   path = M.normalize_path(path)
   return string.sub(path, 1, string.len(base)) == base
+end
+
+---The file system path separator for the current platform.
+M.path_separator = "/"
+M.is_windows = vim.fn.has("win32") == 1 or vim.fn.has("win32unix") == 1
+if M.is_windows == true then
+  M.path_separator = "\\"
 end
 
 ---Split string into a table of strings using a separator.
@@ -336,6 +412,27 @@ M.split_path = function(path)
     parentPath = "/" .. parentPath
   end
   return parentPath, name
+end
+
+---Joins arbitrary number of paths together.
+---@param ... string The paths to join.
+---@return string
+M.path_join = function(...)
+  local args = { ... }
+  if #args == 0 then
+    return ""
+  end
+
+  local all_parts = {}
+  if type(args[1]) == "string" and args[1]:sub(1, 1) == M.path_separator then
+    all_parts[1] = ""
+  end
+
+  for _, arg in ipairs(args) do
+    local arg_parts = M.split(arg, M.path_separator)
+    vim.list_extend(all_parts, arg_parts)
+  end
+  return table.concat(all_parts, M.path_separator)
 end
 
 local table_merge_internal
@@ -394,6 +491,10 @@ M.truthy = function(value)
     return #value > 0
   end
   return true
+end
+
+M.windowize_path = function(path)
+  return path:gsub("/", "\\")
 end
 
 M.wrap = function(func, ...)

@@ -16,19 +16,50 @@ local log = require("neo-tree.log")
 local M = {}
 
 local function clear_buffer(path)
-  for _, buf in pairs(api.nvim_list_bufs()) do
-    if api.nvim_buf_get_name(buf) == path then
-      api.nvim_command(":bwipeout! " .. buf)
+  local buf = utils.find_buffer_by_name(path)
+  if buf < 1 then
+    return
+  end
+  local alt = vim.fn.bufnr("#")
+  -- Check all windows to see if they are using the buffer
+  for _, win in ipairs(vim.api.nvim_list_wins()) do
+    if vim.api.nvim_win_get_buf(win) == buf then
+      -- if there is no alternate buffer yet, create a blank one now
+      if alt < 1 or alt == buf then
+        alt = vim.api.nvim_create_buf(true, false)
+      end
+      -- replace the buffer displayed in this window with the alternate buffer
+      vim.api.nvim_win_set_buf(win, alt)
     end
+  end
+  local success, msg = pcall(vim.api.nvim_buf_delete, buf, { force = true })
+  if not success then
+    log.error("Could not clear buffer: ", msg)
   end
 end
 
-local get_unused_name
+local function create_all_parents(path)
+  local create_all_as_folders
+  function create_all_as_folders(in_path)
+    if not loop.fs_stat(in_path) then
+      local parent, _ = utils.split_path(in_path)
+      if parent then
+        create_all_as_folders(parent)
+      end
+      loop.fs_mkdir(in_path, 493)
+    end
+  end
 
-function get_unused_name(destination, name_chosen_callback)
+  local parent_path, _ = utils.split_path(path)
+  create_all_as_folders(parent_path)
+end
+
+local get_unused_name
+function get_unused_name(destination, name_chosen_callback, first_message)
   if loop.fs_stat(destination) then
     local parent_path, name = utils.split_path(destination)
-    inputs.input(name .. " already exists. Please enter a new name: ", name, function(new_name)
+    local message = first_message or name .. " already exists. Please enter a new name: "
+    inputs.input(message, name, function(new_name)
       if new_name and string.len(new_name) > 0 then
         local new_path = parent_path .. utils.path_separator .. new_name
         get_unused_name(new_path, name_chosen_callback)
@@ -40,7 +71,9 @@ function get_unused_name(destination, name_chosen_callback)
 end
 -- Move Node
 M.move_node = function(source, destination, callback)
-  get_unused_name(destination, function(dest)
+  local parent_path, name = utils.split_path(source)
+  get_unused_name(destination or source, function(dest)
+    create_all_parents(dest)
     loop.fs_rename(source, dest, function(err)
       if err then
         log.error("Could not move the files")
@@ -56,18 +89,17 @@ M.move_node = function(source, destination, callback)
         end
       end)
     end)
-  end)
+  end, 'Move "' .. name .. '" to:')
 end
 
 -- Copy Node
 M.copy_node = function(source, _destination, callback)
-  get_unused_name(_destination, function(destination)
-    loop.fs_copyfile(source, destination)
-    local handle
-    handle = loop.spawn("cp", { args = { "-r", source, destination } }, function(code)
-      handle:close()
-      if code ~= 0 then
-        log.error("copy failed")
+  local parent_path, name = utils.split_path(source)
+  get_unused_name(_destination or source, function(destination)
+    create_all_parents(destination)
+    loop.fs_copyfile(source, destination, function(err)
+      if err then
+        log.error("Could not copy the files")
         return
       end
       vim.schedule(function()
@@ -77,7 +109,7 @@ M.copy_node = function(source, _destination, callback)
         end
       end)
     end)
-  end)
+  end, 'Copy "' .. name .. '" to:')
 end
 
 -- Create Node
@@ -92,10 +124,10 @@ M.create_node = function(in_directory, callback)
       return
     end
 
+    create_all_parents(destination)
     if vim.endswith(destination, "/") then
       loop.fs_mkdir(destination, 493)
     else
-      --create_dirs_if_needed(parent_path)
       local open_mode = loop.constants.O_CREAT + loop.constants.O_WRONLY + loop.constants.O_TRUNC
       local fd = loop.fs_open(destination, "w", open_mode)
       if not fd then
@@ -169,11 +201,11 @@ M.delete_node = function(path, callback)
             return false
           end
         else
-          clear_buffer(child_path)
           local success = loop.fs_unlink(child_path)
           if not success then
             return false
           end
+          clear_buffer(child_path)
         end
       end
       return loop.fs_rmdir(dir_path)

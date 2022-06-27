@@ -5,7 +5,6 @@ local vim = vim
 local utils = require("neo-tree.utils")
 local fs_scan = require("neo-tree.sources.filesystem.lib.fs_scan")
 local renderer = require("neo-tree.ui.renderer")
-local inputs = require("neo-tree.ui.inputs")
 local events = require("neo-tree.events")
 local log = require("neo-tree.log")
 local manager = require("neo-tree.sources.manager")
@@ -39,6 +38,9 @@ local follow_internal = function(callback, force_show)
   end
 
   local state = get_state()
+  if not state.path then
+    return false
+  end
   local window_exists = renderer.window_exists(state)
   if window_exists then
     local node = state.tree and state.tree:get_node()
@@ -87,25 +89,11 @@ local follow_internal = function(callback, force_show)
 
   state.position.is.restorable = false -- we will handle setting cursor position here
   fs_scan.get_items_async(state, nil, path_to_reveal, function()
-    local event = {
-      event = events.AFTER_RENDER,
-      id = "neo-tree-follow:" .. tostring(state),
-    }
-    events.unsubscribe(event) -- if there is a prior event waiting, replace it
-    event.handler = function(arg)
-      if arg ~= state then
-        return -- this is not our event
-      end
-      event.cancelled = true
-      log.trace(event.id .. ": handler called")
-      show_only_explicitly_opened()
-      renderer.focus_node(state, path_to_reveal, true)
-      if type(callback) == "function" then
-        callback()
-      end
+    show_only_explicitly_opened()
+    renderer.focus_node(state, path_to_reveal, true)
+    if type(callback) == "function" then
+      callback()
     end
-
-    events.subscribe(event)
   end)
   return true
 end
@@ -116,17 +104,17 @@ M.follow = function(callback, force_show)
   end
   utils.debounce("neo-tree-follow", function()
     return follow_internal(callback, force_show)
-  end, 200, utils.debounce_strategy.CALL_LAST_ONLY)
+  end, 100, utils.debounce_strategy.CALL_LAST_ONLY)
 end
 
-local navigate_internal = function(path, path_to_reveal, callback)
-  log.trace("navigate_internal", path, path_to_reveal)
-  local state = get_state()
+M._navigate_internal = function(state, path, path_to_reveal, callback)
+  log.trace("navigate_internal", state.current_position, path, path_to_reveal)
   state.dirty = false
+  local is_search = utils.truthy(state.search_pattern)
   local path_changed = false
   if path == nil then
     log.debug("navigate_internal: path is nil, using cwd")
-    path = vim.fn.getcwd()
+    path = manager.get_cwd(state)
   end
   if path ~= state.path then
     log.debug("navigate_internal: path changed from ", state.path, " to ", path)
@@ -135,16 +123,26 @@ local navigate_internal = function(path, path_to_reveal, callback)
   end
 
   if path_to_reveal then
-    state.position.set(path_to_reveal)
+    renderer.position.set(state, path_to_reveal)
+    log.debug(
+      "navigate_internal: in path_to_reveal, state.position is ",
+      state.position.node_id,
+      ", restorable = ",
+      state.position.is.restorable
+    )
     fs_scan.get_items_async(state, nil, path_to_reveal, callback)
   else
-    local follow_file = state.follow_current_file and manager.get_path_to_reveal()
+    local is_split = state.current_position == "split"
+    local follow_file = state.follow_current_file
+      and not is_search
+      and not is_split
+      and manager.get_path_to_reveal()
     local handled = false
     if utils.truthy(follow_file) then
       handled = follow_internal(callback, true)
     end
     if not handled then
-      local success, msg = pcall(state.position.save)
+      local success, msg = pcall(renderer.position.save, state)
       if success then
         log.trace("navigate_internal: position saved")
       else
@@ -154,10 +152,11 @@ local navigate_internal = function(path, path_to_reveal, callback)
     end
   end
 
-  if path_changed then
-    if state.bind_to_cwd then
-      vim.api.nvim_command("tcd " .. path)
-    end
+  if path_changed and state.bind_to_cwd then
+    manager.set_cwd(state)
+  end
+  if not is_search and require("neo-tree").config.git_status_async then
+    git.status_async(state.path)
   end
 end
 
@@ -165,37 +164,52 @@ end
 ---@param path string Path to navigate to. If empty, will navigate to the cwd.
 ---@param path_to_reveal string Node to focus after the items are loaded.
 ---@param callback function Callback to call after the items are loaded.
-M.navigate = function(path, path_to_reveal, callback)
+M.navigate = function(state, path, path_to_reveal, callback)
   log.trace("navigate", path, path_to_reveal)
-  local state = get_state()
-  state.in_navigate = true
   utils.debounce("filesystem_navigate", function()
-    navigate_internal(path, path_to_reveal, callback)
-  end, utils.debounce_strategy.CALL_FIRST_AND_LAST, 200)
+    M._navigate_internal(state, path, path_to_reveal, callback)
+  end, utils.debounce_strategy.CALL_FIRST_AND_LAST, 100)
 end
 
-M.reset_search = function(refresh)
+M.reset_search = function(state, refresh, open_current_node)
   log.trace("reset_search")
-  local state = get_state()
   if refresh == nil then
     refresh = true
   end
   if state.open_folders_before_search then
-    log.trace("reset_search: open_folders_before_search")
     state.force_open_folders = utils.table_copy(state.open_folders_before_search)
   else
-    log.trace("reset_search: why are there no open_folders_before_search?")
     state.force_open_folders = nil
   end
   state.search_pattern = nil
   state.open_folders_before_search = nil
   if refresh then
-    manager.refresh(M.name)
+    if open_current_node then
+      local success, node = pcall(state.tree.get_node, state.tree)
+      if success and node then
+        local path = node:get_id()
+        renderer.position.set(state, path)
+        if node.type == "directory" then
+          log.trace("opening directory from search: ", path)
+          M.navigate(state, nil, path, function()
+            pcall(renderer.focus_node, state, path, false)
+          end)
+        else
+          if state.current_position == "split" then
+            utils.open_file(state, node:get_id())
+          else
+            utils.open_file(state, path)
+            M.navigate(state, nil, path)
+          end
+        end
+      end
+    else
+      M.navigate(state)
+    end
   end
 end
 
-M.show_new_children = function(node_or_path)
-  local state = get_state()
+M.show_new_children = function(state, node_or_path)
   local node = node_or_path
   if node_or_path == nil then
     node = state.tree:get_node()
@@ -204,6 +218,10 @@ M.show_new_children = function(node_or_path)
     if node == nil then
       local parent_path, _ = utils.split_path(node_or_path)
       node = state.tree:get_node(parent_path)
+      if node == nil then
+        M.navigate(state, nil, node_or_path)
+        return
+      end
     end
   else
     node = node_or_path
@@ -214,11 +232,11 @@ M.show_new_children = function(node_or_path)
   end
 
   if node:is_expanded() then
-    manager.refresh(M.name)
+    M.navigate(state)
   else
     fs_scan.get_items_async(state, nil, false, function()
       local new_node = state.tree:get_node(node:get_id())
-      M.toggle_directory(new_node)
+      M.toggle_directory(state, new_node)
     end)
   end
 end
@@ -238,6 +256,11 @@ M.setup = function(config, global_config)
           config.before_render(this_state)
         end
       end,
+    })
+  elseif global_config.git_status_async then
+    manager.subscribe(M.name, {
+      event = events.GIT_STATUS_CHANGED,
+      handler = wrap(manager.git_status_changed),
     })
   elseif global_config.enable_git_status then
     manager.subscribe(M.name, {
@@ -268,6 +291,7 @@ M.setup = function(config, global_config)
           log.trace("Ignoring vim_buffer_changed event from " .. source)
           return
         end
+        log.trace("refreshing due to vim_buffer_changed event: ", afile)
         manager.refresh(M.name)
       end,
     })
@@ -299,8 +323,7 @@ M.setup = function(config, global_config)
 end
 
 ---Expands or collapses the current node.
-M.toggle_directory = function(node)
-  local state = get_state()
+M.toggle_directory = function(state, node)
   local tree = state.tree
   if not node then
     node = tree:get_node()
@@ -310,8 +333,10 @@ M.toggle_directory = function(node)
   end
   state.explicitly_opened_directories = state.explicitly_opened_directories or {}
   if node.loaded == false then
-    state.explicitly_opened_directories[node:get_id()] = true
-    fs_scan.get_items_async(state, node.id, true)
+    local id = node:get_id()
+    state.explicitly_opened_directories[id] = true
+    renderer.position.set(state, nil)
+    fs_scan.get_items_async(state, id, true)
   elseif node:has_children() then
     local updated = false
     if node:is_expanded() then

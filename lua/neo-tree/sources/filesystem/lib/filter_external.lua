@@ -1,6 +1,7 @@
 local vim = vim
 local log = require("neo-tree.log")
 local Job = require("plenary.job")
+local utils = require("neo-tree.utils")
 
 local M = {}
 local fd_supports_max_results = nil
@@ -47,10 +48,21 @@ M.find_files = function(opts)
   local limit = opts.limit or 200
   local cmd = get_find_command(opts)
   local path = opts.path
-  local term = opts.term
+  local full_path_words = opts.find_by_full_path_words
+  local regex, glob = opts.term, opts.term
 
-  if term ~= "*" and not term:find("*") then
-    term = "*" .. term .. "*"
+  if full_path_words then
+    local words = utils.split(glob, " ")
+    regex = ".*" .. table.concat(words, ".*") .. ".*"
+  else
+    if glob ~= "*" then
+      if glob:sub(1) ~= "*" then
+        glob = "*" .. glob
+      end
+      if glob:sub(-1) ~= "*" then
+        glob = glob .. "*"
+      end
+    end
   end
 
   local args = {}
@@ -67,7 +79,12 @@ M.find_files = function(opts)
     if not filters.respect_gitignore then
       append("--no-ignore")
     end
-    append("--glob", term, path)
+    if full_path_words then
+      append("--full-path", regex)
+    else
+      append("--glob", glob)
+    end
+    append(path)
     append("--color", "never")
     if fd_supports_max_results then
       append("--max-results", limit)
@@ -78,9 +95,17 @@ M.find_files = function(opts)
     if not filters.show_hidden then
       append("-not", "-path", "*/.*")
     end
-    append("-iname", term)
+    if full_path_words then
+      append("-regextype",  "sed", "-regex", regex)
+    else
+      append("-iname", glob)
+    end
+  elseif cmd == "fzf" then
+    -- This does not work yet, there's some kind of issue with how fzf uses stdout
+    error("fzf is not a supported find_command")
+    append("--no-sort", "--no-expect", "--filter", opts.term) -- using the raw term without glob patterns
   elseif cmd == "where" then
-    append("/r", path, term)
+    append("/r", path, glob)
   else
     return { "No search command found!" }
   end
@@ -91,30 +116,44 @@ M.find_files = function(opts)
     elseif type(opts.find_args) == "table" then
       append(unpack(opts.find_args))
     elseif type(opts.find_args) == "function" then
-      args = opts.find_args(cmd, path, term, args)
+      args = opts.find_args(cmd, path, glob, args)
     end
   end
 
+  local maximum_results = limit or 100
+  if fd_supports_max_results then
+    maximum_results = nil
+  end
+  local item_count = 0
+  local over_limit = false
   Job
     :new({
       command = cmd,
+      cwd = path,
       args = args,
       enable_recording = false,
-      maximum_results = limit or 100,
       on_stdout = function(err, line)
-        if opts.on_insert then
-          opts.on_insert(err, line)
+        if not over_limit then
+          if opts.on_insert then
+            opts.on_insert(err, line)
+          end
+          item_count = item_count + 1
+          over_limit = maximum_results and item_count > maximum_results
         end
       end,
       on_stderr = function(err, line)
-        if opts.on_insert then
-          if not err then
-            err = line
+        if not over_limit then
+          if opts.on_insert then
+            if not err then
+              err = line
+            end
+            opts.on_insert(err, line)
           end
-          opts.on_insert(err, line)
+          item_count = item_count + 1
+          over_limit = maximum_results and item_count > maximum_results
         end
       end,
-      on_exit = function(j, return_val)
+      on_exit = function(_, return_val)
         if opts.on_exit then
           opts.on_exit(return_val)
         end

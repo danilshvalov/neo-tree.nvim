@@ -39,7 +39,7 @@ end
 
 local ensure_config = function()
   if not M.config then
-    M.setup({ log_to_file = false })
+    M.setup({ log_to_file = false }, true)
   end
 end
 
@@ -66,7 +66,8 @@ local define_events = function()
   events.define_autocmd_event(events.VIM_WIN_ENTER, { "WinEnter" }, 0)
   events.define_autocmd_event(events.VIM_DIR_CHANGED, { "DirChanged" }, 200)
   events.define_autocmd_event(events.VIM_TAB_CLOSED, { "TabClosed" })
-
+  events.define_autocmd_event(events.VIM_COLORSCHEME, { "ColorScheme" }, 0)
+  events.define_event(events.GIT_STATUS_CHANGED, { debounce_frequency = 0 })
   events_setup = true
 end
 
@@ -81,9 +82,89 @@ local check_source = function(source_name)
   return source_name
 end
 
+local get_position = function(source_name)
+  local pos = utils.get_value(M, "config." .. source_name .. ".window.position", "left")
+  return pos
+end
+
+local get_hijack_netrw_behavior = function()
+  local option = "filesystem.hijack_netrw_behavior"
+  local hijack_behavior = utils.get_value(M.config, option, "open_default")
+  if hijack_behavior == "disabled" then
+    return hijack_behavior
+  elseif hijack_behavior == "open_default" then
+    return hijack_behavior
+  elseif hijack_behavior == "open_split" then
+    return hijack_behavior
+  else
+    log.error("Invalid value for " .. option .. ": " .. hijack_behavior)
+    return "disabled"
+  end
+end
+
+local hijack_netrw = function()
+  local hijack_behavior = get_hijack_netrw_behavior()
+  if hijack_behavior == "disabled" then
+    return false
+  end
+
+  -- ensure this is a directory
+  local bufname = vim.api.nvim_buf_get_name(0)
+  local stats = vim.loop.fs_stat(bufname)
+  if not stats then
+    return false
+  end
+  if stats.type ~= "directory" then
+    return false
+  end
+
+  -- record where we are now
+  local should_open_split = hijack_behavior == "open_split" or get_position("filesystem") == "split"
+  local winid = vim.api.nvim_get_current_win()
+  local dir_bufnr = vim.api.nvim_get_current_buf()
+
+  -- We will want to replace the "directory" buffer with either the "alternate"
+  -- buffer or a new blank one.
+  local replace_with_bufnr = vim.fn.bufnr("#")
+  if replace_with_bufnr > 0 then
+    if vim.api.nvim_buf_get_option(replace_with_bufnr, "filetype") == "neo-tree" then
+      replace_with_bufnr = -1
+    end
+  end
+  if not should_open_split then
+    if replace_with_bufnr == dir_bufnr or replace_with_bufnr < 1 then
+      replace_with_bufnr = vim.api.nvim_create_buf(true, false)
+    end
+  end
+  if replace_with_bufnr > 0 then
+    pcall(vim.api.nvim_win_set_buf, winid, replace_with_bufnr)
+  end
+  local remove_dir_buf = vim.schedule_wrap(function()
+    pcall(vim.api.nvim_buf_delete, dir_bufnr, { force = true })
+  end)
+
+  -- Now actually open the tree, with a very quick debounce because this may be
+  -- called multiple times in quick succession.
+  utils.debounce("hijack_netrw_" .. winid, function()
+    local state
+    if should_open_split then
+      log.debug("hijack_netrw: opening split")
+      state = manager.get_state("filesystem", nil, winid)
+      state.current_position = "split"
+    else
+      log.debug("hijack_netrw: opening default")
+      M.close_all_except("filesystem")
+      state = manager.get_state("filesystem")
+    end
+    require("neo-tree.sources.filesystem")._navigate_internal(state, bufname, nil, remove_dir_buf)
+  end, 10, utils.debounce_strategy.CALL_LAST_ONLY)
+
+  return true
+end
+
 M.close_all_except = function(source_name)
   source_name = check_source(source_name)
-  local target_pos = utils.get_value(M, "config." .. source_name .. ".window.position", "left")
+  local target_pos = get_position(source_name)
   for _, name in ipairs(sources) do
     if name ~= source_name then
       local pos = utils.get_value(M, "config." .. name .. ".window.position", "left")
@@ -101,7 +182,7 @@ M.close_all = function(at_position)
   renderer.close_all_floating_windows()
   if type(at_position) == "string" and at_position > "" then
     for _, name in ipairs(sources) do
-      local pos = utils.get_value(M, "config." .. name .. ".window.position", "left")
+      local pos = get_position(name)
       if pos == at_position then
         manager.close(name)
       end
@@ -129,6 +210,11 @@ end
 --TODO: Remove the close_others option in 2.0
 M.focus = function(source_name, close_others, toggle_if_open)
   source_name = check_source(source_name)
+  if get_position(source_name) == "split" then
+    M.show_in_split(source_name, toggle_if_open)
+    return
+  end
+
   if toggle_if_open then
     if manager.close(source_name) then
       -- It was open, and now it's not.
@@ -144,28 +230,45 @@ M.focus = function(source_name, close_others, toggle_if_open)
   manager.focus(source_name)
 end
 
-M.hijack_netrw = function()
-  local bufname = vim.api.nvim_buf_get_name(0)
-  local stats = vim.loop.fs_stat(bufname)
-  local is_dir = stats and stats.type == "directory"
-  if is_dir then
-    vim.cmd("bwipeout!")
-    manager.navigate("filesystem", bufname)
-    return true
-  else
-    return false
-  end
-end
-
-M.reveal_current_file = function(source_name, toggle_if_open)
+M.reveal_current_file = function(source_name, toggle_if_open, force_cwd)
   source_name = check_source(source_name)
+  if get_position(source_name) == "split" then
+    M.reveal_in_split(source_name, toggle_if_open)
+    return
+  end
   if toggle_if_open then
     if manager.close(source_name) then
       -- It was open, and now it's not.
       return
     end
   end
-  manager.reveal_current_file(source_name)
+  manager.reveal_current_file(source_name, nil, force_cwd)
+end
+
+M.reveal_in_split = function(source_name, toggle_if_open)
+  source_name = check_source(source_name)
+  if toggle_if_open then
+    local state = manager.get_state(source_name, nil, vim.api.nvim_get_current_win())
+    if renderer.close(state) then
+      -- It was open, and now it's not.
+      return
+    end
+  end
+  --TODO: if we are currently in a sidebar, don't replace it with a split style
+  manager.reveal_in_split(source_name)
+end
+
+M.show_in_split = function(source_name, toggle_if_open)
+  source_name = check_source(source_name)
+  if toggle_if_open then
+    local state = manager.get_state(source_name, nil, vim.api.nvim_get_current_win())
+    if renderer.close(state) then
+      -- It was open, and now it's not.
+      return
+    end
+  end
+  --TODO: if we are currently in a sidebar, don't replace it with a split style
+  manager.show_in_split(source_name)
 end
 
 M.get_prior_window = function()
@@ -240,17 +343,24 @@ M.buffer_enter_event = function(args)
   end
 
   -- if vim is trying to open a dir, then we hijack it
-  if M.hijack_netrw() then
+  if hijack_netrw() then
     return
   end
 
   -- For all others, make sure another buffer is not hijacking our window
+  -- ..but not if the position is "split"
   local prior_buf = vim.fn.bufnr("#")
   if prior_buf < 1 then
     return
   end
   local prior_type = vim.api.nvim_buf_get_option(prior_buf, "filetype")
   if prior_type == "neo-tree" then
+    local position = vim.api.nvim_buf_get_var(prior_buf, "neo_tree_position")
+    if position == "split" then
+      -- nothing to do here, files are supposed to open in same window
+      return
+    end
+
     local current_tabnr = vim.api.nvim_get_current_tabpage()
     local neo_tree_tabnr = vim.api.nvim_buf_get_var(prior_buf, "neo_tree_tabnr")
     if neo_tree_tabnr ~= current_tabnr then
@@ -276,7 +386,7 @@ M.buffer_enter_event = function(args)
       pcall(vim.cmd, "bdelete " .. bufname)
       local fake_state = {
         window = {
-          position = "left",
+          position = position,
         },
       }
       utils.open_file(fake_state, bufname)
@@ -289,6 +399,32 @@ M.win_enter_event = function()
   if utils.is_floating(win_id) then
     return
   end
+
+  -- if the new win is not a floating window, make sure all neo-tree floats are closed
+  require("neo-tree").close_all("float")
+
+  if M.config.close_if_last_window then
+    local tabnr = vim.api.nvim_get_current_tabpage()
+    local wins = utils.get_value(M, "config.prior_windows", {})[tabnr]
+    local prior_exists = utils.truthy(wins)
+    local non_floating_wins = vim.tbl_filter(function(win)
+      return not utils.is_floating(win)
+    end, vim.api.nvim_tabpage_list_wins(tabnr))
+    local win_count = #non_floating_wins
+    log.trace("checking if last window")
+    log.trace("prior window exists = ", prior_exists)
+    log.trace("win_count: ", win_count)
+    if prior_exists and win_count == 1 and vim.o.filetype == "neo-tree" then
+      local position = vim.api.nvim_buf_get_var(0, "neo_tree_position")
+      if position ~= "split" then
+        -- close_if_last_window just doesn't make sense for a split style
+        log.trace("last window, closing")
+        vim.cmd("q!")
+        return
+      end
+    end
+  end
+
   if vim.o.filetype == "neo-tree" then
     -- it's a neo-tree window, ignore
     return
@@ -318,6 +454,11 @@ end
 --TODO: Remove the do_not_focus and close_others options in 2.0
 M.show = function(source_name, do_not_focus, close_others, toggle_if_open)
   source_name = check_source(source_name)
+  if get_position(source_name) == "split" then
+    M.show_in_split(source_name, toggle_if_open)
+    return
+  end
+
   if toggle_if_open then
     if manager.close(source_name) then
       -- It was open, and now it's not.
@@ -341,8 +482,47 @@ M.set_log_level = function(level)
   log.set_level(level)
 end
 
-M.setup = function(config)
-  config = config or {}
+local function merge_global_components_config(components, config)
+  local indent_exists = false
+  local merged_components = {}
+  for _, component in ipairs(components) do
+    local name = component[1]
+    if type(name) == "string" then
+      if name == "indent" then
+        indent_exists = true
+      end
+      local merged = { name }
+      local global_config = config.default_component_configs[name]
+      if global_config then
+        for k, v in pairs(global_config) do
+          merged[k] = v
+        end
+      end
+      for k, v in pairs(component) do
+        merged[k] = v
+      end
+      table.insert(merged_components, merged)
+    else
+      log.error("component name is the wrong type", component)
+    end
+  end
+
+  -- If the indent component is not specified, then add it.
+  -- We do this because it used to be implicitly added, so we don't want to
+  -- break any existing configs.
+  if not indent_exists then
+    local indent = { "indent" }
+    for k, v in pairs(config.default_component_configs.indent or {}) do
+      indent[k] = v
+    end
+    table.insert(merged_components, 1, indent)
+  end
+  return merged_components
+end
+
+M.setup = function(config, is_auto_config)
+  local default_config = vim.deepcopy(defaults)
+  config = vim.deepcopy(config or {})
   if config.log_level ~= nil then
     M.set_log_level(config.log_level)
   end
@@ -367,47 +547,68 @@ M.setup = function(config)
   highlights.setup()
 
   -- setup the default values for all sources
-  local source_defaults = {}
+  local merged_source_config = {}
   for _, source_name in ipairs(sources) do
-    local source = utils.table_copy(defaults[source_name] or {})
+    local default_source_config = default_config[source_name]
     local mod_root = "neo-tree.sources." .. source_name
-    source.components = require(mod_root .. ".components")
-    source.commands = require(mod_root .. ".commands")
-    source.name = source_name
+    default_source_config.components = require(mod_root .. ".components")
+    default_source_config.commands = require(mod_root .. ".commands")
+    default_source_config.name = source_name
+
+    --validate the window.position
+    local pos_key = source_name .. ".window.position"
+    local position = utils.get_value(config, pos_key, "left", true)
+    local valid_positions = {
+      left = true,
+      right = true,
+      top = true,
+      bottom = true,
+      float = true,
+      split = true,
+    }
+    if not valid_positions[position] then
+      log.error("Invalid value for ", pos_key, ": ", position)
+      config[source_name].window.position = "left"
+    end
 
     -- Make sure all the mappings are normalized so they will merge properly.
-    normalize_mappings(source)
+    normalize_mappings(default_source_config)
     normalize_mappings(config[source_name])
 
     -- if user sets renderers, completely wipe the default ones
-    if utils.get_value(config, source_name .. ".renderers.directory") then
-      source.renderers.directory = {}
+    for name, _ in pairs(default_source_config.renderers) do
+      local user = utils.get_value(config, source_name .. ".renderers." .. name)
+      if user then
+        default_source_config.renderers[name] = nil
+      end
     end
-    if utils.get_value(config, source_name .. ".renderers.file") then
-      source.renderers.file = {}
-    end
-    source_defaults[source_name] = source
   end
-  local default_config = utils.table_merge(defaults, source_defaults)
 
   -- apply the users config
   M.config = utils.table_merge(default_config, config)
 
-  -- setup the sources with the combined config
   for _, source_name in ipairs(sources) do
+    for name, rndr in pairs(M.config[source_name].renderers) do
+      M.config[source_name].renderers[name] = merge_global_components_config(rndr, M.config)
+    end
     manager.setup(source_name, M.config[source_name], M.config)
+    manager.redraw(source_name)
   end
 
-  local event_handler = {
+  events.subscribe({
+    event = events.VIM_COLORSCHEME,
+    handler = highlights.setup,
+    id = "neo-tree-highlight",
+  })
+
+  events.subscribe({
     event = events.VIM_WIN_ENTER,
     handler = M.win_enter_event,
     id = "neo-tree-win-enter",
-  }
-  if config.open_files_in_last_window then
-    events.subscribe(event_handler)
-  else
-    events.unsubscribe(event_handler)
-    config.prior_windows = nil
+  })
+
+  if not is_auto_config and get_hijack_netrw_behavior() ~= "disabled" then
+    vim.cmd("silent! autocmd! FileExplorer *")
   end
 end
 
